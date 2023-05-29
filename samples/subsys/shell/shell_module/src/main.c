@@ -11,6 +11,9 @@
 #include <stdlib.h>
 #include <zephyr/drivers/uart.h>
 #include <zephyr/usb/usb_device.h>
+#include <zephyr/device.h>
+#include <zephyr/drivers/gpio.h>
+#include <zephyr/drivers/pwm.h>
 #include <ctype.h>
 
 #ifdef CONFIG_ARCH_POSIX
@@ -20,6 +23,31 @@
 #endif
 
 LOG_MODULE_REGISTER(app);
+
+/*
+ * Get button configuration from the devicetree sw0 alias. This is mandatory.
+ */
+#define SW0_NODE	DT_ALIAS(sw0)
+#if !DT_NODE_HAS_STATUS(SW0_NODE, okay)
+#error "Unsupported board: sw0 devicetree alias is not defined"
+#endif
+static const struct gpio_dt_spec button = GPIO_DT_SPEC_GET_OR(SW0_NODE, gpios,
+							      {0});
+static struct gpio_callback button_cb_data;
+
+static struct gpio_dt_spec led_r = GPIO_DT_SPEC_GET_OR(DT_ALIAS(led0), gpios, {0});
+static struct gpio_dt_spec led_g = GPIO_DT_SPEC_GET_OR(DT_ALIAS(led1), gpios, {0});
+static struct gpio_dt_spec led_b = GPIO_DT_SPEC_GET_OR(DT_ALIAS(led2), gpios, {0});
+
+
+void button_pressed(const struct device *dev, struct gpio_callback *cb,
+		    uint32_t pins)
+{
+	printk("Button pressed at %" PRIu32 "\n", k_cycle_get_32());
+	gpio_pin_set(led_r.port, led_r.pin, 1);
+	gpio_pin_set(led_g.port, led_g.pin, 1);
+	gpio_pin_set(led_b.port, led_b.pin, 1);
+}
 
 extern void foo(void);
 
@@ -429,9 +457,46 @@ SHELL_CMD_REGISTER(section_cmd, &sub_section_cmd,
 
 int main(void)
 {
+	int ret;
+
 	if (IS_ENABLED(CONFIG_SHELL_START_OBSCURED)) {
 		login_init();
 	}
+
+	if (!gpio_is_ready_dt(&button)) {
+		printk("Error: button device %s is not ready\n",
+		       button.port->name);
+		return 0;
+	}
+
+	ret = gpio_pin_configure_dt(&button, GPIO_INPUT);
+	if (ret != 0) {
+		printk("Error %d: failed to configure %s pin %d\n",
+		       ret, button.port->name, button.pin);
+		return 0;
+	}
+
+	ret = gpio_pin_interrupt_configure_dt(&button,
+					      GPIO_INT_EDGE_TO_ACTIVE);
+	if (ret != 0) {
+		printk("Error %d: failed to configure interrupt on %s pin %d\n",
+			ret, button.port->name, button.pin);
+		return 0;
+	}
+
+	gpio_init_callback(&button_cb_data, button_pressed, BIT(button.pin));
+	gpio_add_callback(button.port, &button_cb_data);
+	printk("Set up button at %s pin %d\n", button.port->name, button.pin);
+
+	gpio_pin_configure_dt(&led_r, GPIO_OUTPUT);
+	gpio_pin_set(led_r.port, led_r.pin, 0);
+
+	gpio_pin_configure_dt(&led_g, GPIO_OUTPUT);
+	gpio_pin_set(led_g.port, led_g.pin, 0);
+
+	gpio_pin_configure_dt(&led_b, GPIO_OUTPUT);
+	gpio_pin_set(led_b.port, led_b.pin, 0);
+
 
 #if DT_NODE_HAS_COMPAT(DT_CHOSEN(zephyr_shell_uart), zephyr_cdc_acm_uart)
 	const struct device *dev;
